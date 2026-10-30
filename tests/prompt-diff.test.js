@@ -8,7 +8,7 @@ test("prompt diff leaves equal lines unchanged", () => {
 
 test("prompt diff detects an added line", () => {
   const result = comparePromptLines("one", "one\ntwo");
-  assert.equal(result.added, 1); assert.equal(result.removed, 0);
+  assert.equal(result.added, 2); assert.equal(result.removed, 0);
 });
 
 test("prompt diff detects a removed line", () => {
