@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Analytics from "./Analytics.jsx";
+import { comparePromptLines } from "./prompt-diff.js";
 import "./style.css";
 import "./status.css";
 import "./localization.css";
@@ -1405,7 +1406,8 @@ function Versions({ data, refresh, user, setTab, selectedAgent }) {
     [packageAgent, setPackageAgent] = useState(""),
     [busy, setBusy] = useState(false),
     [actionBusy, setActionBusy] = useState(""),
-    [openDetail, setOpenDetail] = useState("");
+    [openDetail, setOpenDetail] = useState(""),
+    [compareIds, setCompareIds] = useState({ baseline: "", candidate: "" });
   const promptFileInput = useRef(null);
   const canChange = user.role === "admin" || user.role === "editor";
   const agentCatalog = useResource("/agents");
@@ -1447,6 +1449,9 @@ function Versions({ data, refresh, user, setTab, selectedAgent }) {
   const bestVersion = versionItems
     .filter((version) => Number.isFinite(version.datasetEvaluation?.holdout?.score))
     .sort((a, b) => b.datasetEvaluation.holdout.score - a.datasetEvaluation.holdout.score)[0];
+  const baseline = versionItems.find((version) => version.id === compareIds.baseline);
+  const candidate = versionItems.find((version) => version.id === compareIds.candidate);
+  const promptComparison = baseline && candidate && baseline.id !== candidate.id ? comparePromptLines(baseline.prompt, candidate.prompt) : null;
   async function action(id, a) {
     if (actionBusy) return;
     try {
@@ -1684,6 +1689,14 @@ function Versions({ data, refresh, user, setTab, selectedAgent }) {
       {versionItems.length > 0 && <section className="version-story-intro">
         <div><p className="eyebrow">ЛИНИЯ РАЗВИТИЯ</p><h2>{selectedAgent?.name || "Промпты лаборатории"}</h2><p>Один исходный промпт, отдельные кандидаты и сохранённые результаты их проверок.</p></div>
         <div className="version-story-best"><span>Лучшая проверенная версия</span><b>{bestVersion ? `${bestVersion.datasetEvaluation.holdout.score}/10` : "—"}</b><small>{bestVersion ? "независимый holdout" : "пока нет holdout-проверки"}</small></div>
+      </section>}
+      {versionItems.length >= 2 && <section className="prompt-comparison" aria-labelledby="prompt-comparison-title">
+        <div><p className="eyebrow">НОВАЯ ФУНКЦИЯ</p><h2 id="prompt-comparison-title">Сравнение версий промпта</h2><p>Выберите исходную и новую версии: additions отмечены зелёным, removals — красным.</p></div>
+        <div className="prompt-comparison-controls">
+          <label>Исходная версия<select value={compareIds.baseline} onChange={(event) => setCompareIds((value) => ({ ...value, baseline: event.target.value }))}><option value="">Выберите версию</option>{versionItems.map((version) => <option key={version.id} value={version.id}>{displayVersionName(version.name)}</option>)}</select></label>
+          <label>Новая версия<select value={compareIds.candidate} onChange={(event) => setCompareIds((value) => ({ ...value, candidate: event.target.value }))}><option value="">Выберите версию</option>{versionItems.map((version) => <option key={version.id} value={version.id}>{displayVersionName(version.name)}</option>)}</select></label>
+        </div>
+        {promptComparison && <div className="prompt-comparison-result"><p><b>+{promptComparison.added}</b> добавлено · <b>-{promptComparison.removed}</b> удалено</p><pre>{promptComparison.rows.map((row) => `${row.type === "added" ? "+" : row.type === "removed" ? "-" : " "} ${row.value}`).join("\n")}</pre></div>}
       </section>}
       <div className="versions version-timeline">
         {versionItems.map((v, index) => (
