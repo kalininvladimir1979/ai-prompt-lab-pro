@@ -5,6 +5,7 @@ import path from "node:path";
 import { validateAgentPackage } from './agent-package.js';
 const app = express(),
   PORT = 5185;
+const isServerless = Boolean(process.env.VERCEL);
 app.disable("x-powered-by");
 app.use(express.json({ limit: "500kb" }));
 app.use((q, s, n) => {
@@ -35,6 +36,9 @@ const secretMasterKey = () => {
     return Buffer.from(fs.readFileSync(secretMasterKeyPath, "utf8"), "base64");
   } catch {
     const generated = crypto.randomBytes(32);
+    // Vercel functions run on a read-only filesystem. A demo deployment keeps
+    // its ephemeral key in memory instead of attempting to create a file.
+    if (isServerless) return generated;
     fs.writeFileSync(secretMasterKeyPath, generated.toString("base64"), {
       mode: 0o600,
     });
@@ -81,12 +85,14 @@ const readStoredOpenAIKey = () => {
     return "";
   }
 };
-const saveOpenAIKey = (value) =>
+const saveOpenAIKey = (value) => {
+  if (isServerless) return;
   fs.writeFileSync(
     secretStorePath,
     JSON.stringify({ openai: encryptSecret(value) }),
     { mode: 0o600 },
   );
+};
 let openaiKey = process.env.OPENAI_API_KEY || readStoredOpenAIKey();
 let openaiKeySource = process.env.OPENAI_API_KEY ? "environment" : "server";
 // Локальная стартовая учётная запись из ТЗ. В развёрнутом контуре заменяется ADMIN_PASSWORD.
@@ -122,12 +128,14 @@ try {
     models.chosen = { ...models.chosen, ...savedModels.chosen };
   models.updatedAt = savedModels.updatedAt || null;
 } catch {}
-const saveModelSettings = () =>
+const saveModelSettings = () => {
+  if (isServerless) return;
   fs.writeFileSync(
     modelSettingsPath,
     JSON.stringify({ items: models.items, chosen: models.chosen, updatedAt: models.updatedAt }),
     { mode: 0o600 },
   );
+};
 const log = (actor, action, entity) =>
   audit.unshift({
     id: id(),
@@ -200,7 +208,8 @@ versions = versions.map((item) => {
   delete restored.datasetEvaluation;
   return restored;
 });
-const saveLabState = () =>
+const saveLabState = () => {
+  if (isServerless) return;
   fs.writeFileSync(
     labStatePath,
     JSON.stringify({
@@ -213,6 +222,7 @@ const saveLabState = () =>
     }),
     { mode: 0o600 },
   );
+};
 saveLabState();
 const runs = [],
   proposals = [],
@@ -237,12 +247,14 @@ try {
   deployProfiles = Array.isArray(saved.profiles) ? saved.profiles : [];
   deployRuns = Array.isArray(saved.runs) ? saved.runs : [];
 } catch {}
-const savePublicationState = () =>
+const savePublicationState = () => {
+  if (isServerless) return;
   fs.writeFileSync(
     publicationStatePath,
     JSON.stringify({ profiles: deployProfiles, runs: deployRuns }),
     "utf8",
   );
+};
 // Локальный контур открывается в демонстрационном режиме, пока разработчик явно не сохранит другую конфигурацию.
 let demoConfig = {
   enabled: true,
