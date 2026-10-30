@@ -5,12 +5,13 @@ import { comparePromptLines } from "./prompt-diff.js";
 import "./style.css";
 import "./status.css";
 import "./localization.css";
+let token = localStorage.getItem("promptlab-token") || "";
 const resourceCache = new Map();
 const api = (p, o = {}) =>
   fetch("/api" + p, {
-    credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     ...o,
     body: o.body && JSON.stringify(o.body),
@@ -211,6 +212,8 @@ function Login({ onLogin, space }) {
     setError("");
     try {
       let r = await api(path, { method: "POST", body });
+      token = r.token;
+      localStorage.setItem("promptlab-token", token);
       onLogin(r.user);
     } catch (e) {
       setError(e.message);
@@ -2922,7 +2925,13 @@ function App() {
       .then(setData)
       .catch(() => setUser(null));
   useEffect(() => {
-    api("/auth/me").then((x) => setUser(x.user)).catch(() => {});
+    if (token)
+      api("/auth/me")
+        .then((x) => setUser(x.user))
+        .catch(() => {
+          token = "";
+          localStorage.removeItem("promptlab-token");
+        });
   }, []);
   useEffect(() => {
     const recoverSession = async () => {
@@ -2931,10 +2940,25 @@ function App() {
       resourceCache.clear();
       setData(null);
       try {
-        // An expired cookie is deliberately not renewed automatically: visitors
-        // must explicitly start a new two-hour demo session.
-        setUser(null);
+        if (user.isDemo) {
+          const response = await fetch("/api/demo/session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+          const restored = await response.json();
+          if (!response.ok)
+            throw Error(restored.error || "Демо-сессия недоступна.");
+          token = restored.token;
+          localStorage.setItem("promptlab-token", token);
+          setUser(restored.user);
+        } else {
+          token = "";
+          localStorage.removeItem("promptlab-token");
+          setUser(null);
+        }
       } catch {
+        token = "";
+        localStorage.removeItem("promptlab-token");
         setUser(null);
       } finally {
         recoveringSession.current = false;
@@ -2977,6 +3001,8 @@ function App() {
     }
   }, [user]);
   if (space === "developer" && user?.isDemo) {
+    token = "";
+    localStorage.removeItem("promptlab-token");
     return <Login onLogin={setUser} space={space} />;
   }
   if (!user) return <Login onLogin={setUser} space={space} />;

@@ -3,7 +3,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { validateAgentPackage } from './agent-package.js';
-import { SESSION_COOKIE, createSession, deleteSession, getSession, sessionStorageMode, sessionTtlSeconds, updateSession } from "./session-store.js";
 const app = express(),
   PORT = 5185;
 app.disable("x-powered-by");
@@ -18,22 +17,8 @@ app.use((q, s, n) => {
 });
 const hash = (x) => crypto.createHash("sha256").update(x).digest("hex"),
   id = () => crypto.randomUUID(),
+  sessions = new Map(),
   audit = [];
-const readCookie = (header, name) =>
-  String(header || "")
-    .split(";")
-    .map((part) => part.trim().split("="))
-    .find(([key]) => key === name)
-    ?.slice(1)
-    .join("=") || "";
-const cookieOptions = {
-  httpOnly: true,
-  sameSite: "lax",
-  secure: process.env.VERCEL === "1" || process.env.NODE_ENV === "production",
-  path: "/",
-};
-const setSessionCookie = (s, value) => s.cookie(SESSION_COOKIE, value, { ...cookieOptions, maxAge: sessionTtlSeconds * 1000 });
-const clearSessionCookie = (s) => s.clearCookie(SESSION_COOKIE, cookieOptions);
 const secretStorePath = path.join(process.cwd(), "server", ".secrets.json");
 const secretMasterKeyPath = path.join(
   process.cwd(),
@@ -102,12 +87,8 @@ const saveOpenAIKey = (value) =>
     JSON.stringify({ openai: encryptSecret(value) }),
     { mode: 0o600 },
   );
-// A visitor key belongs only to that visitor's encrypted session record. The
-// optional environment key is a local-development convenience, never written
-// back to a deployment or sent to the browser.
-const localOpenAIKey = process.env.OPENAI_API_KEY || (process.env.VERCEL ? "" : readStoredOpenAIKey());
-const requestOpenAIKey = (q) => decryptSecret(q.session?.openai) || localOpenAIKey;
-const requestOpenAIKeySource = (q) => decryptSecret(q.session?.openai) ? "session" : localOpenAIKey ? "environment" : null;
+let openaiKey = process.env.OPENAI_API_KEY || readStoredOpenAIKey();
+let openaiKeySource = process.env.OPENAI_API_KEY ? "environment" : "server";
 // Локальная стартовая учётная запись из ТЗ. В развёрнутом контуре заменяется ADMIN_PASSWORD.
 const normalAdminPassword = process.env.ADMIN_PASSWORD || "1234";
 const users = [
@@ -284,11 +265,9 @@ const demoUser = {
   role: "admin",
   isDemo: true,
 };
-const user = async (q, s, n) => {
-    const sessionId = readCookie(q.headers.cookie, SESSION_COOKIE);
-    const session = await getSession(sessionId);
-    q.sessionId = sessionId;
-    q.session = session;
+const user = (q, s, n) => {
+    const token = (q.headers.authorization || "").replace("Bearer ", "");
+    const session = sessions.get(token);
     if (session?.demo && activeDemo()) {
       q.user = demoUser;
       return n();
@@ -349,18 +328,18 @@ const metric = () => {
       batchCases: batchItems.length,
     };
   },
-  config = (q) => ({
+  config = () => ({
     provider: "openai",
-    apiKeySaved: Boolean(requestOpenAIKey(q)),
-    apiKeySource: requestOpenAIKeySource(q),
+    apiKeySaved: Boolean(openaiKey),
+    apiKeySource: openaiKey ? openaiKeySource : null,
     models: models.chosen,
     availableModels: models.items,
     modelsUpdatedAt: models.updatedAt,
   });
-const newSession = async (s, session, user) => {
-  const sessionId = await createSession(session);
-  setSessionCookie(s, sessionId);
-  s.json({ user: pub(user), expiresInSeconds: sessionTtlSeconds });
+const newSession = (s, session, user) => {
+  const token = crypto.randomBytes(24).toString("hex");
+  sessions.set(token, session);
+  s.json({ token, user: pub(user) });
 };
 app.get("/api/demo/status", (q, s) =>
   s.json({
@@ -371,19 +350,19 @@ app.get("/api/demo/status", (q, s) =>
     capabilities: activeDemo() ? demoConfig.capabilities : {},
   }),
 );
-app.post("/api/demo/session", async (q, s) => {
+app.post("/api/demo/session", (q, s) => {
   if (!activeDemo() || !demoConfig.publicHome)
     return s.status(403).json({ error: "Публичная демонстрация отключена." });
-  await newSession(s, { demo: true }, demoUser);
+  newSession(s, { demo: true }, demoUser);
 });
-app.post("/api/demo/admin-login", async (q, s) => {
+app.post("/api/demo/admin-login", (q, s) => {
   if (!activeDemo() || !demoConfig.adminPassword)
     return s.status(403).json({ error: "Доступ к демо-админке отключён." });
   if (String(q.body?.password || "") !== "1234")
     return s.status(401).json({ error: "Неверный демонстрационный пароль." });
-  await newSession(s, { demo: true, adminPage: true }, demoUser);
+  newSession(s, { demo: true, adminPage: true }, demoUser);
 });
-app.post("/api/auth/login", async (q, s) => {
+app.post("/api/auth/login", (q, s) => {
   const account =
     users.find(
       (x) => x.email === String(q.body?.email || "admin@promptlab.local"),
@@ -391,12 +370,11 @@ app.post("/api/auth/login", async (q, s) => {
   if (hash(String(q.body?.password || "")) !== account.passwordHash)
     return s.status(401).json({ error: "Неверный пароль." });
   log(account.email, "Вход в кабинет", "auth");
-  await newSession(s, { userId: account.id }, account);
+  newSession(s, { userId: account.id }, account);
 });
 app.get("/api/auth/me", user, (q, s) => s.json({ user: pub(q.user) }));
-app.post("/api/auth/logout", user, async (q, s) => {
-  await deleteSession(q.sessionId);
-  clearSessionCookie(s);
+app.post("/api/auth/logout", user, (q, s) => {
+  sessions.delete((q.headers.authorization || "").replace("Bearer ", ""));
   s.status(204).end();
 });
 app.get("/api/overview", user, (q, s) =>
@@ -474,7 +452,6 @@ app.post(
   user,
   allow("admin", "editor"),
   async (q, s) => {
-    const openaiKey = requestOpenAIKey(q);
     if (!openaiKey)
       return s
         .status(409)
@@ -672,7 +649,7 @@ app.get("/api/simulations/workspaces", user, (q, s) => {
   s.json({ items });
 });
 app.post("/api/simulations", user, allow("admin", "editor"), (q, s) => {
-  if (!requestOpenAIKey(q))
+  if (!openaiKey)
     return s
       .status(409)
       .json({ error: "Сначала сохраните ключ OpenAI в Админке." });
@@ -779,7 +756,7 @@ app.delete(
     s.status(204).end();
   },
 );
-async function judgePromptResult(version, testCase, result, openaiKey) {
+async function judgePromptResult(version, testCase, result) {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     signal: AbortSignal.timeout(90_000),
@@ -825,7 +802,7 @@ function workerInput(testCase) {
   return `Vacancy snippets:\n${numberedSnippets(testCase.vacancyText, "V")}\n\nResume snippets:\n${numberedSnippets(testCase.resumeText, "R")}`;
 }
 
-async function runWorkerPrompt(version, testCase, openaiKey) {
+async function runWorkerPrompt(version, testCase) {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     signal: AbortSignal.timeout(90_000),
@@ -852,7 +829,6 @@ async function runWorkerPrompt(version, testCase, openaiKey) {
 // selected prompt version against ad-hoc user input and never changes the
 // imported agent or its protected 80/20 test set.
 app.post("/api/simulations/recruiter", user, allow("admin", "editor"), async (q, s) => {
-  const openaiKey = requestOpenAIKey(q);
   if (!openaiKey)
     return s.status(409).json({ error: "Сначала сохраните ключ OpenAI в Админке." });
   const body = q.body || {};
@@ -873,13 +849,13 @@ app.post("/api/simulations/recruiter", user, allow("admin", "editor"), async (q,
     return s.status(400).json({ error: "Вставьте и текст вакансии, и текст резюме." });
   const startedAt = Date.now();
   try {
-    const worker = await runWorkerPrompt(version, testCase, openaiKey);
+    const worker = await runWorkerPrompt(version, testCase);
     if (!worker.result)
       return s.status(502).json({ error: "Рабочая модель вернула ответ не в JSON-формате. Ввод сохранён в форме — исправьте версию и повторите запуск." });
     let judge = null;
     let judgeError = null;
     try {
-      judge = await judgePromptResult(version, testCase, worker.result, openaiKey);
+      judge = await judgePromptResult(version, testCase, worker.result);
     } catch (error) {
       judgeError = error.message;
     }
@@ -921,7 +897,6 @@ app.post(
   user,
   allow("admin", "editor"),
   async (q, s) => {
-    const openaiKey = requestOpenAIKey(q);
     if (!openaiKey)
       return s
         .status(409)
@@ -985,7 +960,6 @@ app.post(
   },
 );
 app.post("/api/prompt-versions/:id/judge", user, allow("admin", "editor"), async (q, s) => {
-  const openaiKey = requestOpenAIKey(q);
   if (!openaiKey) return s.status(409).json({ error: "Сначала сохраните ключ OpenAI в Админке." });
   const version = versions.find((item) => item.id === q.params.id);
   if (!version?.lastEval?.result)
@@ -994,7 +968,7 @@ app.post("/api/prompt-versions/:id/judge", user, allow("admin", "editor"), async
   if (!testCase)
     return s.status(409).json({ error: "Исходный тестовый кейс удалён. Запустите проверку заново." });
   try {
-    const judge = await judgePromptResult(version, testCase, version.lastEval.result, openaiKey);
+    const judge = await judgePromptResult(version, testCase, version.lastEval.result);
     version.quality = judge.result.score * 10;
     version.guardrails = judge.result.no_invention === true ? 100 : judge.result.no_invention === false ? 0 : null;
     version.lastEval.judge = judge.result;
@@ -1009,7 +983,6 @@ app.post("/api/prompt-versions/:id/judge", user, allow("admin", "editor"), async
   }
 });
 app.post("/api/prompt-versions/:id/evaluate-dataset", user, allow("admin", "editor"), async (q, s) => {
-  const openaiKey = requestOpenAIKey(q);
   if (!openaiKey) return s.status(409).json({ error: "Сначала сохраните ключ OpenAI в Админке." });
   const version = versions.find((item) => item.id === q.params.id);
   const dataset = datasets.find((item) => item.id === q.body?.datasetId && item.mode === "evaluation");
@@ -1021,11 +994,11 @@ app.post("/api/prompt-versions/:id/evaluate-dataset", user, allow("admin", "edit
   const items = [];
   for (const item of cases) {
     try {
-      const worker = await runWorkerPrompt(version, item.data, openaiKey);
+      const worker = await runWorkerPrompt(version, item.data);
       let judge = null;
       let judgeError = null;
       if (worker.result) {
-        try { judge = await judgePromptResult(version, item.data, worker.result, openaiKey); }
+        try { judge = await judgePromptResult(version, item.data, worker.result); }
         catch (error) { judgeError = error.message; }
       }
       items.push({ caseId: item.id, split: item.split, validJson: Boolean(worker.result), agentScore: worker.result?.score ?? null, judge: judge?.result || null, judgeError, tokens: worker.tokens + (judge?.tokens || 0) });
@@ -1060,7 +1033,6 @@ app.post("/api/prompt-versions/:id/evaluate-dataset", user, allow("admin", "edit
   s.json({ evaluation, version });
 });
 app.post("/api/prompt-versions/:id/improve", user, allow("admin", "editor"), async (q, s) => {
-  const openaiKey = requestOpenAIKey(q);
   const source = versions.find((item) => item.id === q.params.id);
   if (!source) return s.status(404).json({ error: "Версия не найдена." });
   if (source.status !== "tested") return s.status(409).json({ error: "Сначала выполните проверку версии." });
@@ -1147,7 +1119,7 @@ app.get("/api/evaluations", user, (q, s) => {
 });
 app.get("/api/setup-status", user, (q, s) =>
   s.json({
-    openaiConfigured: Boolean(requestOpenAIKey(q)),
+    openaiConfigured: Boolean(openaiKey),
     recruiter: { cases: resumes.length, minimumCases: 1 },
     sales: { profiles: salesProfiles.length, scenarios: scenarios.length },
   }),
@@ -1194,23 +1166,23 @@ app.post("/api/test-data/reset", user, allow("admin"), (q, s) => {
   s.json({ removed });
 });
 app.get("/api/settings/admin", user, allow("admin"), (q, s) =>
-  s.json({ ...config(q), sessionTtlSeconds, sessionStorage: sessionStorageMode }),
+  s.json(config()),
 );
-app.put("/api/settings/admin", user, allow("admin"), async (q, s) => {
+app.put("/api/settings/admin", user, allow("admin"), (q, s) => {
   const { apiKey, models: chosen } = q.body || {};
   if (apiKey) {
     if (!String(apiKey).startsWith("sk-"))
       return s
         .status(400)
         .json({ error: "Ключ OpenAI должен начинаться с sk-." });
-    q.session = { ...q.session, openai: encryptSecret(String(apiKey)) };
-    if (!(await updateSession(q.sessionId, q.session)))
-      return s.status(401).json({ error: "Сессия истекла. Откройте новую демонстрацию и повторите ввод ключа." });
+    openaiKey = String(apiKey);
+    openaiKeySource = "server";
+    saveOpenAIKey(openaiKey);
   }
   if (chosen) models.chosen = { ...models.chosen, ...chosen };
   saveModelSettings();
   log(q.user.email, "Обновлены LLM-настройки", "OpenAI");
-  s.json({ ...config(q), sessionTtlSeconds, sessionStorage: sessionStorageMode });
+  s.json(config());
 });
 app.post("/api/settings/models/check", user, allow("admin"), (q, s) => {
   const selected = { ...models.chosen, ...(q.body?.models || {}) };
@@ -1253,7 +1225,6 @@ app.post("/api/settings/models/check", user, allow("admin"), (q, s) => {
   });
 });
 app.post("/api/settings/models/refresh", user, allow("admin"), async (q, s) => {
-  const openaiKey = requestOpenAIKey(q);
   if (!openaiKey)
     return s.status(409).json({
       error: "Сначала сохраните ключ OpenAI, затем обновите каталог моделей.",

@@ -1,7 +1,7 @@
 import React,{useEffect,useState}from 'react';
 import './analytics.css';
 
-const request=(path)=>fetch(`/api${path}`,{credentials:"same-origin"}).then(async r=>{const data=await r.json();if(!r.ok)throw Error(data.error||'Не удалось получить аналитику.');return data});
+const request=(path)=>fetch(`/api${path}`,{headers:{Authorization:`Bearer ${localStorage.getItem('promptlab-token')||''}`}}).then(async r=>{const data=await r.json();if(!r.ok)throw Error(data.error||'Не удалось получить аналитику.');return data});
 
 export default function Analytics(){
   const [data,setData]=useState(null);
