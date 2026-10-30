@@ -1,0 +1,66 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+enum Role {
+  admin
+  editor
+  viewer
+}
+enum PromptStatus {
+  draft
+  tested
+  published
+}
+model User {
+  id String @id @default(cuid())
+  email String @unique
+  passwordHash String
+  role Role @default(viewer)
+}
+model RecruiterProfile {
+  id String @id @default(cuid())
+  name String
+  currentPrompt String
+}
+model SalesProfile {
+  id String @id @default(cuid())
+  name String
+  data Json
+}
+model Vacancy {
+  id String @id @default(cuid())
+}
+model ResumeCase {
+  id String @id @default(cuid())
+}
+model GoldEvaluation {
+  id String @id @default(cuid())
+}
+model SalesScenario {
+  id String @id @default(cuid())
+}
+model Conversation {
+  id String @id @default(cuid())
+}
+model Lead {
+  id String @id @default(cuid())
+}
+model PromptVersion {
+  id String @id @default(cuid())
+}
+model EvaluationRun {
+  id String @id @default(cuid())
+}
+model EvaluationResult {
+  id String @id @default(cuid())
+}
+model ImprovementProposal {
+  id String @id @default(cuid())
+}
+model UsageMetric {
+  id String @id @default(cuid())
+}

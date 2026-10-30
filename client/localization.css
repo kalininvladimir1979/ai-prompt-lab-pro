@@ -1,0 +1,9 @@
+/* Russian labels for product-facing workflow states. API values remain stable. */
+.status{font-size:0}
+.status::after{font:700 10px/1 "DM Mono",monospace;letter-spacing:.02em}
+.status.draft::after{content:"Черновик"}
+.status.tested::after{content:"Протестирована"}
+.status.published::after{content:"Опубликована"}
+
+.versions .actions .ghost{font-size:0}
+.versions .actions .ghost::after{content:"Сравнить";font-size:12px}
